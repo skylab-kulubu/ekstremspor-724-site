@@ -14,7 +14,10 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-RUN npm run build
+# `next build` loads every route module to collect page data; src/lib/db/pool.ts builds its pg.Pool at import
+# and throws without DATABASE_URL. A placeholder for this one command only: the pool never connects during the
+# build, and the value is not in the runtime image (production sets DATABASE_URL in the Dokploy environment).
+RUN DATABASE_URL=postgres://build-placeholder@127.0.0.1:1/build-placeholder npm run build
 
 FROM node:22-alpine AS runner
 WORKDIR /app

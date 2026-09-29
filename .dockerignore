@@ -16,3 +16,7 @@ docker-compose.yml
 coverage
 *.log
 uploads
+.env
+.env.*
+!.env.example
+.github

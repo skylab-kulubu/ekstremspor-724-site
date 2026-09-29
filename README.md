@@ -19,10 +19,13 @@ docker-compose on a single host.
 
 ```bash
 cp .env.example .env
-# fill in: SESSION_SECRET (openssl rand -hex 32), ADMIN_EMAILS,
-#         ADMIN_PASSWORD, ALLOWED_EMAIL_DOMAINS
+# fill in: POSTGRES_PASSWORD and SESSION_SECRET (openssl rand -hex 32),
+#         ADMIN_EMAILS, ADMIN_PASSWORD; optionally ALLOWED_EMAIL_DOMAINS
 docker compose up -d --build
 ```
+
+`.env.example` carries names only. Compose refuses to start without
+`POSTGRES_PASSWORD`; there is no default password.
 
 `docker compose up -d` brings up two services on the `skynet` bridge
 network:
@@ -48,11 +51,34 @@ docker compose down -v     # wipe everything, schema re-runs on next up
 You still need a Postgres 17 instance somewhere. The quickest path:
 
 ```bash
+cp .env.example .env       # set POSTGRES_PASSWORD, then
+                           # DATABASE_URL=postgres://extremspor:<that password>@127.0.0.1:5432/extremspor
 docker compose up -d db    # just the DB
-cp .env.example .env       # DATABASE_URL already points at 127.0.0.1:5432
 npm install
 npm run dev                # binds 0.0.0.0:3000 so LAN devices can reach it
 ```
+
+## Release
+
+Images are built by `.github/workflows/ghcr.yml` (the SKY LAB platform
+pattern) for `linux/amd64`:
+
+- Pull request (to `main` or `production`): build the image, boot it
+  against a Postgres 17 service container with `db/init/01_schema.sql`,
+  probe `GET /` and `GET /api/stats`. Nothing is pushed.
+- Push to `main`: `ghcr.io/skylab-kulubu/ekstremspor-724-site:latest`
+  and `:<sha>`. No deploy.
+- Push to `production` (release = squash PR `main` → `production`):
+  `:production` and `:<sha>`, then the Dokploy deploy hook from the
+  `DOKPLOY_DEPLOY_HOOK` repository secret, if set.
+
+Production runs in the SKY LAB Dokploy project "Ekstrem Sporlar" from
+`:production`; secrets live in OpenBao and the Dokploy environment
+holds references only. Uploads are a persistent volume at
+`/app/uploads`, included in the nightly encrypted backup.
+
+The pre-Postgres (Supabase) version of the site is kept on the
+`supabase` branch.
 
 ## Architecture notes
 
