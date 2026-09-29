@@ -15,5 +15,8 @@ docker-compose.yml
 .dockerignore
 coverage
 *.log
-supabase/.temp
-supabase/.branches
+uploads
+.env
+.env.*
+!.env.example
+.github

@@ -1,52 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
-import { fetchLiveStats, type LiveStats } from "@/lib/queries/stats";
+import { useRealtime } from "@/lib/realtime/useRealtime";
+import type { LiveStats } from "@/lib/queries/stats";
 
 const TR = (n: number) => n.toLocaleString("tr-TR");
 
 export function StatCards() {
-  const supabase = createClient();
   const [stats, setStats] = useState<LiveStats | null>(null);
 
   const refetch = useCallback(async () => {
-    setStats(await fetchLiveStats(supabase));
-  }, [supabase]);
+    const res = await fetch("/api/stats", { cache: "no-store" });
+    if (!res.ok) return;
+    setStats(await res.json());
+  }, []);
 
   useEffect(() => {
     refetch();
   }, [refetch]);
-
-  useEffect(() => {
-    const activitiesChannel = supabase
-      .channel("stats-activities")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "activities",
-          filter: "status=eq.approved",
-        },
-        () => refetch(),
-      )
-      .subscribe();
-
-    const equipChannel = supabase
-      .channel("stats-equipments")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "equipments" },
-        () => refetch(),
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(activitiesChannel);
-      supabase.removeChannel(equipChannel);
-    };
-  }, [supabase, refetch]);
+  useRealtime(["activities_changes", "equipments_changes"], refetch);
 
   const cards = [
     {

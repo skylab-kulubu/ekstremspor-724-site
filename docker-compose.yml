@@ -1,20 +1,62 @@
 services:
+  db:
+    image: postgres:17-alpine
+    container_name: extremspor-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-extremspor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-extremspor}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Scripts in /docker-entrypoint-initdb.d/ are executed in alphabetical
+      # order the first time the data dir is empty — so the schema only
+      # bootstraps once. Wipe the `pgdata` volume to force a re-run.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-extremspor} -d ${POSTGRES_DB:-extremspor}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - skynet
+    # Expose port to host so `psql` from the host machine still works.
+    # Internal container-to-container traffic uses the `db` hostname.
+    ports:
+      - "5432:5432"
+
   web:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        # NEXT_PUBLIC_* values are inlined into the client bundle at
-        # build time, so they must be passed as build args (not just
-        # runtime env). Reads from the .env file in this directory.
-        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
     container_name: extremspor-web
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Server-side connection — uses the compose-network DNS name `db`.
+      DATABASE_URL: postgres://${POSTGRES_USER:-extremspor}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-extremspor}
+      NODE_ENV: production
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-extremspor_session}
+      SESSION_SECRET: ${SESSION_SECRET}
+      ADMIN_EMAILS: ${ADMIN_EMAILS}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS}
+      UPLOADS_DIR: /app/uploads
+    volumes:
+      # Evidence screenshots live here. Survives container rebuilds.
+      - uploads:/app/uploads
     ports:
       - "3000:3000"
-    env_file:
-      # Server-only env (SUPABASE_SERVICE_ROLE_KEY, ADMIN_PASSWORD, etc.)
-      # is loaded at runtime. The same file holds the NEXT_PUBLIC_* vars
-      # that compose interpolates into the build args above.
-      - .env
-    restart: unless-stopped
+    networks:
+      - skynet
+
+volumes:
+  pgdata:
+  uploads:
+
+networks:
+  skynet:
+    driver: bridge

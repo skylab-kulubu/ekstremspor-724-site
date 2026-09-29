@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { UserSearch, type SearchedUser } from "@/components/admin/UserSearch";
+import { adminOnSiteEntry } from "@/lib/actions/activities";
 import type { VehicleType } from "@/lib/types";
 
 type Props = {
@@ -18,7 +18,6 @@ const VEHICLE_OPTIONS: { value: VehicleType; label: string }[] = [
 ];
 
 export function OnSiteEntryModal({ open, onClose }: Props) {
-  const supabase = createClient();
   const [user, setUser] = useState<SearchedUser | null>(null);
   const [distance, setDistance] = useState("");
   const [vehicle, setVehicle] = useState<VehicleType | null>(null);
@@ -40,17 +39,15 @@ export function OnSiteEntryModal({ open, onClose }: Props) {
     setSubmitting(true);
     setError(null);
 
-    const { error: insertError } = await supabase.from("activities").insert({
-      user_id: user.id,
+    const result = await adminOnSiteEntry({
+      userId: user.id,
       distance: distanceNum,
-      vehicle_type: vehicle,
-      source: "on_site",
-      status: "approved",
+      vehicle,
     });
 
     setSubmitting(false);
-    if (insertError) {
-      setError("Kayıt eklenemedi. Lütfen tekrar deneyin.");
+    if (result.error) {
+      setError(result.error);
       return;
     }
 

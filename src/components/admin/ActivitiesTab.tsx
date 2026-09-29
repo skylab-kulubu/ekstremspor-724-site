@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { VehicleGlyph } from "@/components/illustrations";
 import {
   adminUpdateActivity,
@@ -49,7 +48,6 @@ export function ActivitiesTab({
 }: {
   onGotoApprovals?: () => void;
 }) {
-  const supabase = createClient();
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>({
@@ -65,15 +63,14 @@ export function ActivitiesTab({
   const [error, setError] = useState<string | null>(null);
 
   const refetch = useCallback(async () => {
-    const { data } = await supabase
-      .from("activities")
-      .select(
-        "id, user_id, distance, vehicle_type, source, evidence_url, date_range, status, created_at, profiles!inner(full_name, email)",
-      )
-      .order("created_at", { ascending: false });
-    setRows((data ?? []) as unknown as Row[]);
+    const res = await fetch("/api/admin/activities", { cache: "no-store" });
+    if (!res.ok) {
+      setLoading(false);
+      return;
+    }
+    setRows((await res.json()) as Row[]);
     setLoading(false);
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     refetch();

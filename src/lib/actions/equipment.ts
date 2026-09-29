@@ -1,7 +1,7 @@
 "use server";
 
-import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { one, query, withTransaction } from "@/lib/db/pool";
+import { requireAdmin } from "@/lib/auth/session";
 import type { EquipmentVehicleType } from "@/lib/types";
 
 const CODE_PREFIX: Record<EquipmentVehicleType, string> = {
@@ -10,175 +10,152 @@ const CODE_PREFIX: Record<EquipmentVehicleType, string> = {
   skateboard: "KYK",
 };
 
-async function requireAdmin(): Promise<{ ok: true } | { error: string }> {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return { error: "Oturum bulunamadı." };
-
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle();
-
-  if (profile?.role !== "admin") return { error: "Yetkin yok." };
-  return { ok: true };
+async function adminOrError(): Promise<{ ok: true } | { error: string }> {
+  try {
+    await requireAdmin();
+    return { ok: true };
+  } catch {
+    return { error: "Yetkin yok." };
+  }
 }
+
 export async function addEquipment(
   type: EquipmentVehicleType,
   code?: string,
 ): Promise<{ error?: string }> {
-  const auth = await requireAdmin();
-  if ("error" in auth) return { error: auth.error };
-
-  const admin = createAdminClient();
+  const auth = await adminOrError();
+  if ("error" in auth) return auth;
 
   let finalCode = code?.trim() || null;
   if (!finalCode) {
-    const { count } = await admin
-      .from("equipments")
-      .select("id", { count: "exact", head: true })
-      .eq("type", type);
-    const n = (count ?? 0) + 1;
+    const row = await one<{ c: string }>(
+      "select count(*)::text as c from equipments where type = $1",
+      [type],
+    );
+    const n = Number(row?.c ?? 0) + 1;
     finalCode = `${CODE_PREFIX[type]}-${String(n).padStart(3, "0")}`;
   }
 
-  const { error } = await admin.from("equipments").insert({
-    type,
-    status: "available",
-    code: finalCode,
-    assigned_to: null,
-    assigned_at: null,
-    returned_at: null,
-  });
-
-  if (error) {
-    console.error("addEquipment error:", error);
+  try {
+    await query(
+      `insert into equipments (type, status, code)
+         values ($1, 'available', $2)`,
+      [type, finalCode],
+    );
+  } catch (e) {
+    console.error("addEquipment failed:", e);
     return { error: "Ekipman eklenemedi." };
   }
   return {};
 }
+
 export async function deleteEquipment(id: string): Promise<{ error?: string }> {
-  const auth = await requireAdmin();
-  if ("error" in auth) return { error: auth.error };
+  const auth = await adminOrError();
+  if ("error" in auth) return auth;
 
-  const admin = createAdminClient();
-
-  const { data: eq } = await admin
-    .from("equipments")
-    .select("status")
-    .eq("id", id)
-    .single();
-
-  if (eq?.status === "in_use") {
+  const row = await one<{ status: string }>(
+    "select status from equipments where id = $1",
+    [id],
+  );
+  if (row?.status === "in_use") {
     return { error: "Kullanımda olan ekipman silinemez." };
   }
 
-  const { error } = await admin.from("equipments").delete().eq("id", id);
-  if (error) {
-    console.error("deleteEquipment error:", error);
+  try {
+    await query("delete from equipments where id = $1", [id]);
+  } catch (e) {
+    console.error("deleteEquipment failed:", e);
     return { error: "Ekipman silinemedi." };
   }
   return {};
 }
+
 export async function updateEquipmentCode(
   id: string,
   code: string,
 ): Promise<{ error?: string }> {
-  const auth = await requireAdmin();
-  if ("error" in auth) return { error: auth.error };
-
-  const admin = createAdminClient();
-  const { error } = await admin
-    .from("equipments")
-    .update({ code: code.trim() || null })
-    .eq("id", id);
-
-  if (error) {
-    console.error("updateEquipmentCode error:", error);
+  const auth = await adminOrError();
+  if ("error" in auth) return auth;
+  try {
+    await query("update equipments set code = $1 where id = $2", [
+      code.trim() || null,
+      id,
+    ]);
+  } catch (e) {
+    console.error("updateEquipmentCode failed:", e);
     return { error: "Kod güncellenemedi." };
   }
   return {};
 }
+
 export async function setEquipmentStatus(
   id: string,
   status: "available" | "damaged",
 ): Promise<{ error?: string }> {
-  const auth = await requireAdmin();
-  if ("error" in auth) return { error: auth.error };
-
-  const admin = createAdminClient();
-  const { error } = await admin
-    .from("equipments")
-    .update({ status })
-    .eq("id", id)
-    .neq("status", "in_use");
-
-  if (error) {
-    console.error("setEquipmentStatus error:", error);
+  const auth = await adminOrError();
+  if ("error" in auth) return auth;
+  try {
+    await query(
+      "update equipments set status = $1 where id = $2 and status <> 'in_use'",
+      [status, id],
+    );
+  } catch (e) {
+    console.error("setEquipmentStatus failed:", e);
     return { error: "Durum güncellenemedi." };
   }
   return {};
 }
 
 export async function banUser(userId: string): Promise<{ error?: string }> {
-  const auth = await requireAdmin();
-  if ("error" in auth) return { error: auth.error };
-
-  const admin = createAdminClient();
-  const { error } = await admin
-    .from("profiles")
-    .update({ is_banned: true })
-    .eq("id", userId)
-    .neq("role", "admin");
-
-  if (error) return { error: "Kullanıcı banlanamadı." };
+  const auth = await adminOrError();
+  if ("error" in auth) return auth;
+  try {
+    await query(
+      "update profiles set is_banned = true where id = $1 and role <> 'admin'",
+      [userId],
+    );
+  } catch {
+    return { error: "Kullanıcı banlanamadı." };
+  }
   return {};
 }
 
 export async function unbanUser(userId: string): Promise<{ error?: string }> {
-  const auth = await requireAdmin();
-  if ("error" in auth) return { error: auth.error };
-
-  const admin = createAdminClient();
-  const { error } = await admin
-    .from("profiles")
-    .update({ is_banned: false })
-    .eq("id", userId);
-
-  if (error) return { error: "Ban kaldırılamadı." };
+  const auth = await adminOrError();
+  if ("error" in auth) return auth;
+  try {
+    await query("update profiles set is_banned = false where id = $1", [userId]);
+  } catch {
+    return { error: "Ban kaldırılamadı." };
+  }
   return {};
 }
 
 export async function deleteUser(userId: string): Promise<{ error?: string }> {
-  const auth = await requireAdmin();
-  if ("error" in auth) return { error: auth.error };
+  const auth = await adminOrError();
+  if ("error" in auth) return auth;
 
-  const admin = createAdminClient();
+  const row = await one<{ role: string }>(
+    "select role from profiles where id = $1",
+    [userId],
+  );
+  if (row?.role === "admin") return { error: "Admin kullanıcı silinemez." };
 
-  const { data: profile } = await admin
-    .from("profiles")
-    .select("role")
-    .eq("id", userId)
-    .maybeSingle();
-  if (profile?.role === "admin") return { error: "Admin kullanıcı silinemez." };
-
-  // Clear any active equipment assignments first (avoids FK constraint violation)
-  await admin
-    .from("equipments")
-    .update({
-      assigned_to: null,
-      status: "available",
-      returned_at: new Date().toISOString(),
-    })
-    .eq("assigned_to", userId)
-    .eq("status", "in_use");
-
-  const { error } = await admin.auth.admin.deleteUser(userId);
-  if (error) {
-    console.error("deleteUser error:", error);
+  try {
+    await withTransaction(async (c) => {
+      // Release any equipment they currently hold first to avoid stale FK refs.
+      await c.query(
+        `update equipments
+            set status = 'available',
+                assigned_to = null,
+                returned_at = now()
+          where assigned_to = $1 and status = 'in_use'`,
+        [userId],
+      );
+      await c.query("delete from profiles where id = $1", [userId]);
+    });
+  } catch (e) {
+    console.error("deleteUser failed:", e);
     return { error: "Kullanıcı silinemedi." };
   }
   return {};

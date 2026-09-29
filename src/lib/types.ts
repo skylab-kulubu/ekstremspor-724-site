@@ -16,6 +16,7 @@ export type Profile = {
   full_name: string;
   email: string;
   phone: string;
+  password_hash: string | null;
   equipment_need: EquipmentNeed;
   equipment_request_status: EquipmentRequestStatus;
   is_banned: boolean;
@@ -52,6 +53,7 @@ export type EventConfig = {
   end_date: string;
   target_km: number;
   active_day: 1 | 2 | 3;
+  forest_name: string | null;
 };
 
 export type LeaderboardPeriod = "all" | "today" | "last_hour";
@@ -64,54 +66,4 @@ export type LeaderboardEntry = {
   dominant_vehicle: VehicleType;
 };
 
-export type Database = {
-  public: {
-    Tables: {
-      profiles: {
-        Row: Profile;
-        Insert: Omit<
-          Profile,
-          "role" | "created_at" | "is_banned" | "equipment_request_status"
-        > & {
-          role?: Role;
-          created_at?: string;
-          is_banned?: boolean;
-          equipment_request_status?: EquipmentRequestStatus;
-        };
-        Update: Partial<Profile>;
-        Relationships: [];
-      };
-      equipments: {
-        Row: Equipment;
-        Insert: Omit<Equipment, "id"> & { id?: string };
-        Update: Partial<Equipment>;
-        Relationships: [];
-      };
-      activities: {
-        Row: Activity;
-        Insert: Omit<
-          Activity,
-          "id" | "created_at" | "evidence_url" | "date_range" | "status"
-        > & {
-          id?: string;
-          created_at?: string;
-          evidence_url?: string | null;
-          date_range?: string | null;
-          status?: ActivityStatus;
-        };
-        Update: Partial<Activity>;
-        Relationships: [];
-      };
-      event_config: {
-        Row: EventConfig;
-        Insert: Omit<EventConfig, "id"> & { id?: string };
-        Update: Partial<EventConfig>;
-        Relationships: [];
-      };
-    };
-    Views: Record<string, never>;
-    Functions: Record<string, never>;
-    Enums: Record<string, never>;
-    CompositeTypes: Record<string, never>;
-  };
-};
+export type PublicProfile = Pick<Profile, "id" | "full_name" | "email">;

@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { AuthModal } from "@/components/modals/AuthModal";
 import { MyActivitiesModal } from "@/components/modals/MyActivitiesModal";
 import { Arrow } from "@/components/illustrations";
@@ -29,14 +28,13 @@ export function Header({
   isBanned,
   userId,
 }: Props) {
-  const supabase = createClient();
   const [authOpen, setAuthOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [activitiesOpen, setActivitiesOpen] = useState(false);
 
   async function handleLogout() {
-    await supabase.auth.signOut();
+    await fetch("/api/auth/logout", { method: "POST" });
     window.location.href = "/";
   }
 
@@ -97,7 +95,7 @@ export function Header({
                     Aktivite Ekle <Arrow size={11} color="currentColor" />
                   </button>
                 ) : null}
-                <div className="relative hidden md:block">
+                <div className="relative">
                   <button
                     type="button"
                     onClick={() => setUserMenuOpen((o) => !o)}

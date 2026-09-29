@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 
 export type SearchedUser = {
   id: string;
@@ -16,7 +15,6 @@ type Props = {
 };
 
 export function UserSearch({ onSelect, selected, placeholder }: Props) {
-  const supabase = createClient();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchedUser[]>([]);
   const [open, setOpen] = useState(false);
@@ -24,7 +22,10 @@ export function UserSearch({ onSelect, selected, placeholder }: Props) {
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
         setOpen(false);
       }
     }
@@ -38,17 +39,19 @@ export function UserSearch({ onSelect, selected, placeholder }: Props) {
       return;
     }
     const handle = setTimeout(async () => {
-      const term = `%${query.trim()}%`;
-      const { data } = await supabase
-        .from("profiles")
-        .select("id, full_name, email")
-        .or(`full_name.ilike.${term},email.ilike.${term}`)
-        .limit(8);
-      setResults((data ?? []) as SearchedUser[]);
+      const res = await fetch(
+        `/api/admin/users/search?q=${encodeURIComponent(query.trim())}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) {
+        setResults([]);
+        return;
+      }
+      setResults((await res.json()) as SearchedUser[]);
       setOpen(true);
     }, 200);
     return () => clearTimeout(handle);
-  }, [query, selected, supabase]);
+  }, [query, selected]);
 
   return (
     <div className="relative" ref={containerRef}>

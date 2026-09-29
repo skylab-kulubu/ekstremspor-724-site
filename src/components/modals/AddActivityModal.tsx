@@ -2,7 +2,6 @@
 
 import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import { ModalScene, VehicleGlyph } from "@/components/illustrations";
 import { KvkkModal } from "@/components/modals/KvkkModal";
 import { requestOnSiteEquipment } from "@/lib/actions/activities";
@@ -39,9 +38,8 @@ const ON_SITE_VEHICLE_OPTIONS = VEHICLE_OPTIONS.filter(
   (v) => v.value !== "running",
 );
 
-export function AddActivityModal({ open, onClose, userId }: Props) {
+export function AddActivityModal({ open, onClose, userId: _userId }: Props) {
   const router = useRouter();
-  const supabase = createClient();
 
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [mode, setMode] = useState<Mode | null>(null);
@@ -103,30 +101,23 @@ export function AddActivityModal({ open, onClose, userId }: Props) {
     if (mode === "remote") {
       if (!evidence || !kvkk) return;
 
-      const path = `${userId}/${Date.now()}.jpg`;
+      const form = new FormData();
+      form.append("distance", String(distanceNum));
+      form.append("vehicle_type", vehicle);
+      form.append("kvkk", "1");
+      if (dateRange) form.append("date_range", dateRange);
+      form.append("evidence", evidence);
 
-      const { error: uploadError } = await supabase.storage
-        .from("evidence")
-        .upload(path, evidence);
-
-      if (uploadError) {
-        setError("Görsel yüklenemedi. Lütfen tekrar deneyin.");
-        setSubmitting(false);
-        return;
-      }
-
-      const { error: insertError } = await supabase.from("activities").insert({
-        user_id: userId,
-        distance: distanceNum,
-        vehicle_type: vehicle,
-        source: "remote",
-        evidence_url: path,
-        date_range: dateRange || null,
-        status: "pending",
+      const res = await fetch("/api/activities/remote", {
+        method: "POST",
+        body: form,
       });
-
-      if (insertError) {
-        setError("Aktivite kaydedilemedi. Lütfen tekrar deneyin.");
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(
+          (data as { error?: string }).error ??
+            "Aktivite kaydedilemedi. Lütfen tekrar deneyin.",
+        );
         setSubmitting(false);
         return;
       }

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/client";
+import { useRealtime } from "@/lib/realtime/useRealtime";
 import { PendingActivities } from "@/components/admin/PendingActivities";
 import { EquipmentTable } from "@/components/admin/EquipmentTable";
 import { OnSiteEntryModal } from "@/components/admin/OnSiteEntryModal";
@@ -35,34 +35,22 @@ const TAB_TITLE: Record<Tab, string> = {
 };
 
 export function AdminDashboard() {
-  const supabase = createClient();
   const [tab, setTab] = useState<Tab>("overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [onSiteOpen, setOnSiteOpen] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
 
   const fetchPendingCount = useCallback(async () => {
-    const { count } = await supabase
-      .from("activities")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "pending");
-    setPendingCount(count ?? 0);
-  }, [supabase]);
+    const res = await fetch("/api/admin/pending-count", { cache: "no-store" });
+    if (!res.ok) return;
+    const data = (await res.json()) as { count: number };
+    setPendingCount(data.count);
+  }, []);
 
   useEffect(() => {
     fetchPendingCount();
-    const ch = supabase
-      .channel("admin-badges")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "activities" },
-        fetchPendingCount,
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-  }, [supabase, fetchPendingCount]);
+  }, [fetchPendingCount]);
+  useRealtime("activities_changes", fetchPendingCount);
 
   function navTo(t: Tab) {
     setTab(t);
@@ -218,101 +206,41 @@ type ActiveCheckout = {
 };
 
 function OverviewTab({ gotoTab }: { gotoTab: (t: Tab) => void }) {
-  const supabase = createClient();
   const [data, setData] = useState<OverviewData | null>(null);
   const [recentPending, setRecentPending] = useState<PendingPreview[]>([]);
   const [activeCheckouts, setActiveCheckouts] = useState<ActiveCheckout[]>([]);
 
-  const fetch = useCallback(async () => {
-    const [
-      approvedRes,
-      equipRes,
-      pendingCountRes,
-      pendingPreviewRes,
-      checkoutsRes,
-    ] = await Promise.all([
-      supabase
-        .from("activities")
-        .select("user_id, distance")
-        .eq("status", "approved"),
-      supabase.from("equipments").select("type, status"),
-      supabase
-        .from("activities")
-        .select("id", { count: "exact", head: true })
-        .eq("status", "pending"),
-      supabase
-        .from("activities")
-        .select("id, distance, created_at, profiles!inner(full_name)")
-        .eq("status", "pending")
-        .order("created_at", { ascending: false })
-        .limit(3),
-      supabase
-        .from("equipments")
-        .select("id, type, assigned_at, profiles:assigned_to(full_name)")
-        .eq("status", "in_use")
-        .order("assigned_at", { ascending: false, nullsFirst: false })
-        .limit(5),
-    ]);
-
-    const acts = approvedRes.data ?? [];
-    const equips = equipRes.data ?? [];
-
-    const totalKm = acts.reduce((s, a) => s + a.distance, 0);
-    const participants = new Set(acts.map((a) => a.user_id)).size;
-    const pendingCount = pendingCountRes.count ?? 0;
-
-    const stat = (type?: string): EquipStat => {
-      const items = type ? equips.filter((e) => e.type === type) : equips;
-      return {
-        free: items.filter((e) => e.status === "available").length,
-        total: items.length,
-      };
+  const refetch = useCallback(async () => {
+    const res = await fetch("/api/admin/overview", { cache: "no-store" });
+    if (!res.ok) return;
+    const payload = (await res.json()) as {
+      totalKm: number;
+      participants: number;
+      pendingCount: number;
+      all: EquipStat;
+      bicycle: EquipStat;
+      skates: EquipStat;
+      skateboard: EquipStat;
+      recentPending: PendingPreview[];
+      activeCheckouts: ActiveCheckout[];
     };
-
     setData({
-      totalKm,
-      participants,
-      pendingCount,
-      all: stat(),
-      bicycle: stat("bicycle"),
-      skateboard: stat("skateboard"),
-      skates: stat("skates"),
+      totalKm: payload.totalKm,
+      participants: payload.participants,
+      pendingCount: payload.pendingCount,
+      all: payload.all,
+      bicycle: payload.bicycle,
+      skates: payload.skates,
+      skateboard: payload.skateboard,
     });
-
-    const previews = (
-      pendingPreviewRes.data as unknown as {
-        id: string;
-        distance: number;
-        created_at: string;
-        profiles: { full_name: string } | null;
-      }[]
-    ).map((p) => ({
-      id: p.id,
-      name: p.profiles?.full_name ?? "—",
-      distance: p.distance,
-      created_at: p.created_at,
-    }));
-    setRecentPending(previews);
-
-    const checkouts = (
-      checkoutsRes.data as unknown as {
-        id: string;
-        type: VehicleType;
-        assigned_at: string | null;
-        profiles: { full_name: string } | null;
-      }[]
-    ).map((c) => ({
-      id: c.id,
-      type: c.type,
-      name: c.profiles?.full_name ?? "—",
-      assigned_at: c.assigned_at,
-    }));
-    setActiveCheckouts(checkouts);
-  }, [supabase]);
+    setRecentPending(payload.recentPending);
+    setActiveCheckouts(payload.activeCheckouts);
+  }, []);
 
   useEffect(() => {
-    fetch();
-  }, [fetch]);
+    refetch();
+  }, [refetch]);
+  useRealtime(["activities_changes", "equipments_changes"], refetch);
 
   if (!data) {
     return (
@@ -556,23 +484,17 @@ const TYPE_LABEL: Record<string, string> = {
 };
 
 function LogTab() {
-  const supabase = createClient();
   const [rows, setRows] = useState<EquipRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
-      const { data } = await supabase
-        .from("equipments")
-        .select(
-          "id, type, status, code, assigned_at, returned_at, profiles:assigned_to(full_name, email, phone)",
-        )
-        .order("assigned_at", { ascending: false, nullsFirst: false });
-      setRows((data ?? []) as unknown as EquipRow[]);
+      const res = await fetch("/api/admin/equipment-log", { cache: "no-store" });
+      if (res.ok) setRows((await res.json()) as EquipRow[]);
       setLoading(false);
     }
     load();
-  }, [supabase]);
+  }, []);
 
   const active = rows.filter((r) => r.status === "in_use");
   const returned = rows.filter((r) => r.returned_at && r.status !== "in_use");
@@ -711,7 +633,6 @@ type UserRow = {
 };
 
 function UsersTab() {
-  const supabase = createClient();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -722,40 +643,16 @@ function UsersTab() {
   const [editTarget, setEditTarget] = useState<UserRow | null>(null);
 
   async function load() {
-    const [{ data: profiles }, { data: acts }] = await Promise.all([
-      supabase
-        .from("profiles")
-        .select("id, full_name, email, phone, is_banned, created_at")
-        .neq("role", "admin")
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("activities")
-        .select("user_id, distance")
-        .eq("status", "approved"),
-    ]);
-
-    const kmByUser = new Map<string, number>();
-    for (const a of acts ?? []) {
-      kmByUser.set(a.user_id, (kmByUser.get(a.user_id) ?? 0) + a.distance);
+    const res = await fetch("/api/admin/users", { cache: "no-store" });
+    if (res.ok) {
+      setUsers((await res.json()) as UserRow[]);
     }
-
-    setUsers(
-      (profiles ?? []).map((p) => ({
-        id: p.id,
-        full_name: p.full_name,
-        email: p.email,
-        phone: p.phone,
-        is_banned: (p as unknown as { is_banned: boolean }).is_banned ?? false,
-        created_at: p.created_at,
-        total_km: kmByUser.get(p.id) ?? 0,
-      })),
-    );
     setLoading(false);
   }
 
   useEffect(() => {
     load();
-  }, [supabase]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleBan(userId: string, ban: boolean) {
     setBusyId(userId);

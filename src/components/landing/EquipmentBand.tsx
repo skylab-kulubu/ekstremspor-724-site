@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { VehicleGlyph } from "@/components/illustrations";
+import { useRealtime } from "@/lib/realtime/useRealtime";
 import type { EquipmentVehicleType } from "@/lib/types";
 
 type Counts = Record<EquipmentVehicleType, { free: number; total: number }>;
@@ -19,40 +19,32 @@ const EMPTY: Counts = {
   skateboard: { free: 0, total: 0 },
 };
 
+type EquipRow = { type: EquipmentVehicleType; status: string };
+
 export function EquipmentBand() {
-  const supabase = createClient();
   const [counts, setCounts] = useState<Counts>(EMPTY);
 
   const refetch = useCallback(async () => {
-    const { data } = await supabase.from("equipments").select("type, status");
-    if (!data) return;
+    const res = await fetch("/api/equipments", { cache: "no-store" });
+    if (!res.ok) return;
+    const data = (await res.json()) as EquipRow[];
     const next: Counts = {
       bicycle: { free: 0, total: 0 },
       skates: { free: 0, total: 0 },
       skateboard: { free: 0, total: 0 },
     };
     for (const row of data) {
-      const t = row.type as EquipmentVehicleType;
+      const t = row.type;
       next[t].total += 1;
       if (row.status === "available") next[t].free += 1;
     }
     setCounts(next);
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     refetch();
-    const channel = supabase
-      .channel("equipment-band")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "equipments" },
-        () => refetch(),
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [supabase, refetch]);
+  }, [refetch]);
+  useRealtime("equipments_changes", refetch);
 
   const totalFree =
     counts.bicycle.free + counts.skates.free + counts.skateboard.free;
@@ -70,32 +62,36 @@ export function EquipmentBand() {
         />
         Şu an stantta
       </span>
-      {(["bicycle", "skates", "skateboard"] as EquipmentVehicleType[]).map((t, i) => (
-        <span key={t} className="flex items-center">
-          {i > 0 && <span className="mx-0.5 hidden h-4 w-px bg-ink/10 sm:block" />}
-          <span
-            className={`flex items-center gap-1.5 rounded-full px-2 py-1 sm:px-3 ${
-              counts[t].free === 0 ? "bg-sun/10" : ""
-            }`}
-          >
-            <span className="block h-4 w-6 text-ink">
-              <VehicleGlyph
-                type={t}
-                color="currentColor"
-                accent="var(--color-sun)"
-              />
-            </span>
+      {(["bicycle", "skates", "skateboard"] as EquipmentVehicleType[]).map(
+        (t, i) => (
+          <span key={t} className="flex items-center">
+            {i > 0 && (
+              <span className="mx-0.5 hidden h-4 w-px bg-ink/10 sm:block" />
+            )}
             <span
-              className={`font-heading text-lg font-semibold tabular-nums tracking-tight ${
-                counts[t].free === 0 ? "text-[#a3471f]" : "text-ink"
+              className={`flex items-center gap-1.5 rounded-full px-2 py-1 sm:px-3 ${
+                counts[t].free === 0 ? "bg-sun/10" : ""
               }`}
             >
-              {counts[t].free}
+              <span className="block h-4 w-6 text-ink">
+                <VehicleGlyph
+                  type={t}
+                  color="currentColor"
+                  accent="var(--color-sun)"
+                />
+              </span>
+              <span
+                className={`font-heading text-lg font-semibold tabular-nums tracking-tight ${
+                  counts[t].free === 0 ? "text-[#a3471f]" : "text-ink"
+                }`}
+              >
+                {counts[t].free}
+              </span>
+              <span className="text-xs text-ink/60">{LABELS[t]}</span>
             </span>
-            <span className="text-xs text-ink/60">{LABELS[t]}</span>
           </span>
-        </span>
-      ))}
+        ),
+      )}
     </div>
   );
 }

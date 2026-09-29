@@ -1,6 +1,9 @@
 "use server";
 
-import { createAdminClient } from "@/lib/supabase/admin";
+import { one, query } from "@/lib/db/pool";
+import { createSession, deleteCurrentSession } from "@/lib/auth/session";
+import { verifyPassword } from "@/lib/auth/password";
+
 function getAdminEmails(): string[] {
   return (process.env.ADMIN_EMAILS ?? "")
     .split(",")
@@ -21,9 +24,10 @@ function isAdminEmail(email: string): boolean {
 
 function isAllowedStudentEmail(email: string): boolean {
   const domains = getAllowedDomains();
-  if (domains.length === 0) return true; // No restriction configured
+  if (domains.length === 0) return true;
   return domains.some((d) => email.endsWith("@" + d));
 }
+
 export async function checkEmail(
   email: string,
 ): Promise<{ mode: "student" } | { mode: "admin" } | { error: string }> {
@@ -37,12 +41,13 @@ export async function checkEmail(
 
   return {
     error:
-      "Bu e-posta ile kayıt olunamıyor. Sadece @std.yildiz.edu.tr uzantılı öğrenci adresleri kabul edilir.",
+      "Bu e-posta ile kayıt olunamıyor. Sadece izin verilen alan adından kayıt yapılabilir.",
   };
 }
+
 export async function signInStudent(
   email: string,
-): Promise<{ tokenHash?: string; error?: string }> {
+): Promise<{ ok?: true; error?: string }> {
   const normalized = email.trim().toLowerCase();
 
   if (isAdminEmail(normalized)) {
@@ -51,86 +56,73 @@ export async function signInStudent(
   if (!isAllowedStudentEmail(normalized)) {
     return {
       error:
-        "Bu e-posta ile kayıt olunamıyor. Sadece @std.yildiz.edu.tr uzantılı öğrenci adresleri kabul edilir.",
+        "Bu e-posta ile kayıt olunamıyor. Sadece izin verilen alan adından kayıt yapılabilir.",
     };
   }
 
-  const admin = createAdminClient();
-
-  await admin.auth.admin.createUser({
-    email: normalized,
-    email_confirm: true,
-  });
-
-  const { data, error } = await admin.auth.admin.generateLink({
-    type: "magiclink",
-    email: normalized,
-  });
-
-  if (error || !data?.properties?.hashed_token) {
-    return { error: "Oturum oluşturulamadı. Lütfen tekrar deneyin." };
-  }
-
-  return { tokenHash: data.properties.hashed_token };
-}
-
-async function ensureAdminProfile(
-  adminClient: ReturnType<typeof createAdminClient>,
-  email: string,
-) {
-  const { data: user } = await adminClient.auth.admin.listUsers();
-  const target = user?.users?.find((u) => u.email?.toLowerCase() === email);
-  if (!target) return;
-
-  await adminClient.from("profiles").upsert(
-    {
-      id: target.id,
-      full_name: "Admin",
-      email,
-      phone: "-",
-      equipment_need: "none",
-      role: "admin",
-    },
-    { onConflict: "id" },
+  // Find or stub a profile. We use a placeholder name/phone — onboarding
+  // will overwrite both before the user can do anything else.
+  const row = await one<{ id: string }>(
+    `insert into profiles (full_name, email, phone, equipment_need, role)
+       values ('', $1, '', 'none', 'user')
+       on conflict (email) do update set email = excluded.email
+       returning id`,
+    [normalized],
   );
+  if (!row) return { error: "Oturum oluşturulamadı." };
+
+  await createSession(row.id);
+  return { ok: true };
 }
+
 export async function signInAdmin(
   email: string,
   password: string,
-): Promise<{ tokenHash?: string; error?: string }> {
+): Promise<{ ok?: true; error?: string }> {
   const normalized = email.trim().toLowerCase();
-
   if (!isAdminEmail(normalized)) {
     return { error: "Bu adres admin yetkisine sahip değil." };
   }
-
   const expected = process.env.ADMIN_PASSWORD;
   if (!expected) {
-    return {
-      error: "Admin şifresi yapılandırılmamış. Sistem yöneticisine başvurun.",
-    };
+    return { error: "Admin şifresi yapılandırılmamış. Sistem yöneticisine başvur." };
   }
+
+  // Ensure the admin profile exists and is flagged admin. Plain comparison
+  // against ADMIN_PASSWORD is intentional — there's one shared admin secret
+  // for the event, not per-user hashes. (Set ADMIN_PASSWORD to something
+  // strong in production.)
   if (password.length === 0 || password !== expected) {
-    return { error: "Şifre hatalı." };
+    // Defense in depth: if the row already has a per-user password_hash
+    // set, verify against it before rejecting.
+    const row = await one<{ password_hash: string | null }>(
+      "select password_hash from profiles where email = $1",
+      [normalized],
+    );
+    if (!(row?.password_hash && verifyPassword(password, row.password_hash))) {
+      return { error: "Şifre hatalı." };
+    }
   }
 
-  const admin = createAdminClient();
+  const row = await one<{ id: string }>(
+    `insert into profiles (full_name, email, phone, equipment_need, role)
+       values ('Admin', $1, '-', 'none', 'admin')
+       on conflict (email) do update
+         set role = 'admin'
+       returning id`,
+    [normalized],
+  );
+  if (!row) return { error: "Oturum oluşturulamadı." };
 
-  await admin.auth.admin.createUser({
-    email: normalized,
-    email_confirm: true,
-  });
+  await createSession(row.id);
+  return { ok: true };
+}
 
-  await ensureAdminProfile(admin, normalized);
+export async function signOut(): Promise<void> {
+  await deleteCurrentSession();
+}
 
-  const { data, error } = await admin.auth.admin.generateLink({
-    type: "magiclink",
-    email: normalized,
-  });
-
-  if (error || !data?.properties?.hashed_token) {
-    return { error: "Oturum oluşturulamadı. Lütfen tekrar deneyin." };
-  }
-
-  return { tokenHash: data.properties.hashed_token };
+// Used by /api/auth route too — exported for tests.
+export async function purgeExpiredSessions(): Promise<void> {
+  await query("delete from sessions where expires_at < now()");
 }

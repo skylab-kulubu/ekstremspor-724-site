@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { useRealtime } from "@/lib/realtime/useRealtime";
 import { VehicleGlyph } from "@/components/illustrations";
 import {
   addEquipment,
@@ -9,6 +9,7 @@ import {
   updateEquipmentCode,
   setEquipmentStatus,
 } from "@/lib/actions/equipment";
+import { returnEquipment } from "@/lib/actions/activities";
 import { EquipmentAssignModal } from "@/components/modals/EquipmentAssignModal";
 import type { Equipment, EquipmentVehicleType } from "@/lib/types";
 
@@ -29,8 +30,6 @@ const STATUS_META = {
 };
 
 export function EquipmentTable() {
-  const supabase = createClient();
-
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -52,31 +51,19 @@ export function EquipmentTable() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const refetch = useCallback(async () => {
-    const { data } = await supabase
-      .from("equipments")
-      .select(
-        "id, type, status, code, assigned_to, assigned_at, returned_at, profiles:assigned_to(full_name)",
-      )
-      .order("type")
-      .order("code", { nullsFirst: false });
-    setRows((data ?? []) as unknown as Row[]);
+    const res = await fetch("/api/equipments", { cache: "no-store" });
+    if (!res.ok) {
+      setLoading(false);
+      return;
+    }
+    setRows((await res.json()) as Row[]);
     setLoading(false);
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     refetch();
-    const ch = supabase
-      .channel("admin-equipments")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "equipments" },
-        () => refetch(),
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-  }, [supabase, refetch]);
+  }, [refetch]);
+  useRealtime("equipments_changes", refetch);
 
   async function handleReturn() {
     if (!returnTarget) return;
@@ -84,33 +71,16 @@ export function EquipmentTable() {
     if (!km || km <= 0) return;
     setReturning(true);
 
-    if (returnTarget.assigned_to) {
-      const { data: act } = await supabase
-        .from("activities")
-        .select("id")
-        .eq("user_id", returnTarget.assigned_to)
-        .eq("source", "on_site")
-        .eq("status", "pending")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (act) {
-        await supabase
-          .from("activities")
-          .update({ distance: km, status: "approved" })
-          .eq("id", (act as { id: string }).id);
-      }
-    }
-    await supabase
-      .from("equipments")
-      .update({
-        status: returnDamaged ? "damaged" : "available",
-        assigned_to: null,
-        returned_at: new Date().toISOString(),
-      })
-      .eq("id", returnTarget.id);
-
+    const result = await returnEquipment({
+      equipmentId: returnTarget.id,
+      km,
+      damaged: returnDamaged,
+    });
     setReturning(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
     setReturnTarget(null);
     setReturnKm("");
     setReturnDamaged(false);
@@ -302,7 +272,7 @@ export function EquipmentTable() {
                     return (
                       <div
                         key={r.id}
-                        className={`flex min-w-120 items-center gap-3 px-4 py-3 sm:min-w-0 sm:px-6 ${i > 0 ? "border-t border-ink/8" : ""}`}
+                        className={`flex min-w-[480px] items-center gap-3 px-4 py-3 sm:min-w-0 sm:px-6 ${i > 0 ? "border-t border-ink/8" : ""}`}
                       >
                         <div className="shrink-0">
                           {isEditing ? (

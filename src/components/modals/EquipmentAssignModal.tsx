@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { UserSearch, type SearchedUser } from "@/components/admin/UserSearch";
+import { assignEquipment } from "@/lib/actions/activities";
 
 type Props = {
   open: boolean;
@@ -19,7 +19,6 @@ export function EquipmentAssignModal({
   equipmentLabel,
   onAssigned,
 }: Props) {
-  const supabase = createClient();
   const [user, setUser] = useState<SearchedUser | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,23 +30,16 @@ export function EquipmentAssignModal({
     setSubmitting(true);
     setError(null);
 
-    const { error: updateError } = await supabase
-      .from("equipments")
-      .update({
-        status: "in_use",
-        assigned_to: user.id,
-        assigned_at: new Date().toISOString(),
-        returned_at: null,
-      })
-      .eq("id", equipmentId);
-
-    if (updateError) {
-      setSubmitting(false);
-      setError("Ekipman atanamadı. Lütfen tekrar deneyin.");
+    const result = await assignEquipment({
+      equipmentId,
+      userId: user.id,
+    });
+    setSubmitting(false);
+    if (result.error) {
+      setError(result.error);
       return;
     }
 
-    setSubmitting(false);
     setUser(null);
     onAssigned?.();
     onClose();

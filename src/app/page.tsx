@@ -1,4 +1,3 @@
-import { createClient } from "@/lib/supabase/server";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { HeroClient } from "@/components/landing/HeroClient";
@@ -8,29 +7,15 @@ import { SaplingProgress } from "@/components/landing/SaplingProgress";
 import { HowToJoin } from "@/components/landing/HowToJoin";
 import { AddActivityClient } from "@/components/landing/AddActivityClient";
 import { OnboardingModalClient } from "@/components/modals/OnboardingModalClient";
+import { getCurrentUser } from "@/lib/auth/session";
 
 export default async function Home() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
 
-  let needsOnboarding = false;
-  let isAdmin = false;
-  let isBanned = false;
-
-  if (user) {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("full_name, phone, equipment_need, role, is_banned")
-      .eq("id", user.id)
-      .maybeSingle();
-
-    needsOnboarding =
-      !profile?.full_name || !profile?.phone || !profile?.equipment_need;
-    isAdmin = profile?.role === "admin";
-    isBanned = !!profile?.is_banned;
-  }
+  const needsOnboarding =
+    !!user && (!user.full_name || !user.phone || !user.equipment_need);
+  const isAdmin = user?.role === "admin";
+  const isBanned = !!user?.is_banned;
 
   return (
     <>

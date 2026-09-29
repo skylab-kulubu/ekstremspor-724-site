@@ -1,5 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/types";
+import { one } from "@/lib/db/pool";
 
 export type LiveStats = {
   totalKm: number;
@@ -9,37 +8,28 @@ export type LiveStats = {
   targetKm: number;
 };
 
-export async function fetchLiveStats(
-  supabase: SupabaseClient<Database>,
-): Promise<LiveStats> {
-  const today = new Date().toISOString().split("T")[0];
-
-  const [approvedRes, equipRes, configRes] = await Promise.all([
-    supabase
-      .from("activities")
-      .select("user_id, distance, created_at")
-      .eq("status", "approved"),
-    supabase.from("equipments").select("id").eq("status", "available"),
-    supabase.from("event_config").select("target_km").limit(1).maybeSingle(),
-  ]);
-
-  let totalKm = 0;
-  let todayKm = 0;
-  const distinctUsers = new Set<string>();
-
-  for (const row of approvedRes.data ?? []) {
-    totalKm += row.distance;
-    distinctUsers.add(row.user_id);
-    if (row.created_at?.startsWith(today)) {
-      todayKm += row.distance;
-    }
-  }
+export async function fetchLiveStats(): Promise<LiveStats> {
+  const row = await one<{
+    total_km: string | null;
+    participants: string | null;
+    today_km: string | null;
+    free_equipment: string | null;
+    target_km: number | null;
+  }>(`
+    select
+      (select coalesce(sum(distance), 0)::float from activities where status = 'approved') as total_km,
+      (select count(distinct user_id) from activities where status = 'approved') as participants,
+      (select coalesce(sum(distance), 0)::float from activities
+         where status = 'approved' and created_at::date = current_date) as today_km,
+      (select count(*) from equipments where status = 'available') as free_equipment,
+      (select target_km from event_config limit 1) as target_km
+  `);
 
   return {
-    totalKm,
-    participants: distinctUsers.size,
-    freeEquipment: equipRes.data?.length ?? 0,
-    todayKm,
-    targetKm: configRes.data?.target_km ?? 5000,
+    totalKm: Number(row?.total_km ?? 0),
+    participants: Number(row?.participants ?? 0),
+    todayKm: Number(row?.today_km ?? 0),
+    freeEquipment: Number(row?.free_equipment ?? 0),
+    targetKm: Number(row?.target_km ?? 5000),
   };
 }

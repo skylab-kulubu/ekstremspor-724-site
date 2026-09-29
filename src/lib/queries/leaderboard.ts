@@ -1,6 +1,5 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { many } from "@/lib/db/pool";
 import type {
-  Database,
   LeaderboardEntry,
   LeaderboardPeriod,
   LeaderboardVehicleFilter,
@@ -12,39 +11,43 @@ type Args = {
   vehicle: LeaderboardVehicleFilter;
 };
 
-export async function fetchLeaderboard(
-  supabase: SupabaseClient<Database>,
-  { period, vehicle }: Args,
-): Promise<LeaderboardEntry[]> {
-  let query = supabase
-    .from("activities")
-    .select("user_id, distance, vehicle_type, profiles!inner(full_name)")
-    .eq("status", "approved");
+export async function fetchLeaderboard({
+  period,
+  vehicle,
+}: Args): Promise<LeaderboardEntry[]> {
+  const conditions: string[] = ["a.status = 'approved'"];
+  const params: unknown[] = [];
 
   if (vehicle !== "all") {
-    query = query.eq("vehicle_type", vehicle);
+    params.push(vehicle);
+    conditions.push(`a.vehicle_type = $${params.length}`);
   }
 
   if (period === "today") {
-    const today = new Date().toISOString().split("T")[0];
-    query = query
-      .gte("created_at", `${today}T00:00:00`)
-      .lte("created_at", `${today}T23:59:59`);
+    conditions.push("a.created_at::date = current_date");
   } else if (period === "last_hour") {
-    const oneHourAgo = new Date(Date.now() - 3_600_000).toISOString();
-    query = query.gte("created_at", oneHourAgo);
+    conditions.push("a.created_at >= now() - interval '1 hour'");
   }
 
-  const { data, error } = await query;
-  if (error || !data) return [];
+  const sql = `
+    select
+      a.user_id,
+      coalesce(p.full_name, '—') as full_name,
+      a.vehicle_type,
+      sum(a.distance)::float as distance
+    from activities a
+    left join profiles p on p.id = a.user_id
+    where ${conditions.join(" and ")}
+    group by a.user_id, p.full_name, a.vehicle_type
+  `;
 
   type Row = {
     user_id: string;
+    full_name: string;
+    vehicle_type: VehicleType;
     distance: number;
-    vehicle_type: string;
-    profiles: { full_name: string } | { full_name: string }[] | null;
   };
-  const rows = data as unknown as Row[];
+  const rows = await many<Row>(sql, params);
 
   type Accumulator = {
     user_id: string;
@@ -55,9 +58,6 @@ export async function fetchLeaderboard(
 
   const byUser = new Map<string, Accumulator>();
   for (const row of rows) {
-    const profile = Array.isArray(row.profiles)
-      ? row.profiles[0]
-      : row.profiles;
     const existing = byUser.get(row.user_id);
     if (existing) {
       existing.total_distance += row.distance;
@@ -66,7 +66,7 @@ export async function fetchLeaderboard(
     } else {
       byUser.set(row.user_id, {
         user_id: row.user_id,
-        full_name: profile?.full_name ?? "—",
+        full_name: row.full_name,
         total_distance: row.distance,
         vehicle_km: { [row.vehicle_type]: row.distance },
       });

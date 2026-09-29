@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import { checkEmail, signInStudent, signInAdmin } from "@/lib/actions/auth";
 import { ModalScene } from "@/components/illustrations";
 
@@ -14,7 +13,6 @@ type Props = {
 type Step = "email" | "password";
 
 export function AuthModal({ open, onClose }: Props) {
-  const supabase = createClient();
   const router = useRouter();
   const [step, setStep] = useState<Step>("email");
   const [email, setEmail] = useState("");
@@ -32,22 +30,13 @@ export function AuthModal({ open, onClose }: Props) {
     setLoading(false);
   }
 
-  async function verifyAndClose(tokenHash: string) {
-    const { data, error: verifyError } = await supabase.auth.verifyOtp({
-      token_hash: tokenHash,
-      type: "email",
-    });
-    if (verifyError || !data.session) {
-      if (verifyError) console.error("verifyOtp failed:", verifyError);
-      setError(
-        verifyError?.message
-          ? `Oturum açılamadı: ${verifyError.message}`
-          : "Oturum açılamadı. Lütfen tekrar deneyin.",
-      );
-      setLoading(false);
-      return;
-    }
+  function finishLogin() {
     onClose();
+    // Hard reload — the server-rendered page reads `getCurrentUser()`,
+    // and the new session cookie wasn't present when this render started.
+    window.location.reload();
+    // router.refresh() alone re-runs the RSC but doesn't always pick up
+    // the freshly-set cookie reliably across navigations.
     router.refresh();
   }
 
@@ -73,12 +62,12 @@ export function AuthModal({ open, onClose }: Props) {
     }
 
     const result = await signInStudent(trimmed);
-    if (result.error || !result.tokenHash) {
-      setError(result.error ?? "Oturum açılamadı.");
+    if (result.error) {
+      setError(result.error);
       setLoading(false);
       return;
     }
-    await verifyAndClose(result.tokenHash);
+    finishLogin();
   }
 
   async function handlePasswordSubmit(e: React.FormEvent) {
@@ -88,12 +77,12 @@ export function AuthModal({ open, onClose }: Props) {
     setError(null);
 
     const result = await signInAdmin(email.trim(), password);
-    if (result.error || !result.tokenHash) {
-      setError(result.error ?? "Şifre doğrulanamadı.");
+    if (result.error) {
+      setError(result.error);
       setLoading(false);
       return;
     }
-    await verifyAndClose(result.tokenHash);
+    finishLogin();
   }
 
   return (

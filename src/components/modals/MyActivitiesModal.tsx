@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { useRealtime } from "@/lib/realtime/useRealtime";
 import { cancelActivity } from "@/lib/actions/activities";
 import { VehicleGlyph } from "@/components/illustrations";
 import type { Activity, ActivityStatus, VehicleType } from "@/lib/types";
@@ -61,8 +61,7 @@ function timeAgo(iso: string): string {
   return `${Math.floor(hours / 24)} gün önce`;
 }
 
-export function MyActivitiesModal({ userId, open, onClose }: Props) {
-  const supabase = createClient();
+export function MyActivitiesModal({ userId: _userId, open, onClose }: Props) {
   const [tab, setTab] = useState<TabKey>("all");
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,47 +69,22 @@ export function MyActivitiesModal({ userId, open, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const refetch = useCallback(async () => {
-    const { data: acts } = await supabase
-      .from("activities")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
-    setActivities((acts ?? []) as Activity[]);
+    if (!open) return;
+    const res = await fetch("/api/activities/mine", { cache: "no-store" });
+    if (!res.ok) {
+      setLoading(false);
+      return;
+    }
+    setActivities((await res.json()) as Activity[]);
     setLoading(false);
-  }, [supabase, userId]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     setLoading(true);
     refetch();
-
-    const ch = supabase
-      .channel(`my-activities-${userId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "activities",
-          filter: `user_id=eq.${userId}`,
-        },
-        () => refetch(),
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "profiles",
-          filter: `id=eq.${userId}`,
-        },
-        () => refetch(),
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-  }, [open, supabase, userId, refetch]);
+  }, [open, refetch]);
+  useRealtime("activities_changes", refetch);
 
   async function handleCancel(id: string) {
     if (cancellingId) return;

@@ -2,7 +2,6 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import { saveProfile } from "@/lib/actions/profile";
 import { ModalScene, VehicleGlyph } from "@/components/illustrations";
 import type { EquipmentNeed, VehicleType } from "@/lib/types";
@@ -47,7 +46,6 @@ const EQUIPMENT_OPTIONS: EquipmentOption[] = [
 ];
 
 export function OnboardingModal({ userId: _userId, email }: Props) {
-  const supabase = createClient();
   const router = useRouter();
 
   const [minimized, setMinimized] = useState(false);
@@ -72,7 +70,7 @@ export function OnboardingModal({ userId: _userId, email }: Props) {
 
   async function handleLogout() {
     setLoggingOut(true);
-    await supabase.auth.signOut();
+    await fetch("/api/auth/logout", { method: "POST" });
     window.location.href = "/";
   }
 

@@ -1,8 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
-import { fetchLeaderboard } from "@/lib/queries/leaderboard";
+import { useRealtime } from "@/lib/realtime/useRealtime";
 import { VehicleGlyph } from "@/components/illustrations";
 import type {
   LeaderboardEntry,
@@ -119,7 +118,6 @@ function Podium({
   );
 }
 export function Leaderboard({ userId }: { userId?: string }) {
-  const supabase = createClient();
   const [period, setPeriod] = useState<LeaderboardPeriod>("all");
   const [vehicle, setVehicle] = useState<LeaderboardVehicleFilter>("all");
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
@@ -131,34 +129,24 @@ export function Leaderboard({ userId }: { userId?: string }) {
   const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refetch = useCallback(async () => {
-    const data = await fetchLeaderboard(supabase, { period, vehicle });
+    const res = await fetch(
+      `/api/leaderboard?period=${period}&vehicle=${vehicle}`,
+      { cache: "no-store" },
+    );
+    if (!res.ok) {
+      setLoading(false);
+      return;
+    }
+    const data = (await res.json()) as LeaderboardEntry[];
     setEntries(data);
     setLoading(false);
-  }, [supabase, period, vehicle]);
+  }, [period, vehicle]);
 
   useEffect(() => {
     setLoading(true);
     refetch();
   }, [refetch]);
-
-  useEffect(() => {
-    const channel = supabase
-      .channel("leaderboard-activities")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "activities",
-          filter: "status=eq.approved",
-        },
-        () => refetch(),
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [supabase, refetch]);
+  useRealtime("activities_changes", refetch);
   useEffect(() => {
     if (loading) return;
     const changes = new Map<string, "up" | "down" | "new">();

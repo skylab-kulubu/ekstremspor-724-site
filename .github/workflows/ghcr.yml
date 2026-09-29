@@ -1,0 +1,113 @@
+name: GHCR
+
+# PR: build the image, boot it against Postgres 17 and probe HTTP (no push).
+# main push: ghcr.io/skylab-kulubu/ekstremspor-724-site:latest + :<sha> (no deploy).
+# production push: :production + :<sha>, then the Dokploy deploy hook (if set).
+on:
+  pull_request:
+    branches: [main, production]
+  push:
+    branches: [main, production]
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: ekstremspor
+          POSTGRES_USER: ekstremspor
+          POSTGRES_PASSWORD: ci-probe
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ekstremspor -d ekstremspor"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      IMAGE: ghcr.io/skylab-kulubu/ekstremspor-724-site
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: ekstremspor-724-site:ci
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Boot against Postgres and probe HTTP
+        run: |
+          # Schema once, as the compose db service does on first boot (production's database already has it).
+          docker run --rm --network host -e PGPASSWORD=ci-probe -v "$PWD/db/init:/init:ro" postgres:17-alpine \
+            psql -h localhost -U ekstremspor -d ekstremspor -v ON_ERROR_STOP=1 -q -f /init/01_schema.sql
+          cat > ci.env <<'ENV'
+          DATABASE_URL=postgres://ekstremspor:ci-probe@localhost:5432/ekstremspor
+          SESSION_SECRET=ci-probe
+          SESSION_COOKIE_NAME=extremspor_session
+          SESSION_COOKIE_SECURE=
+          ADMIN_EMAILS=admin@example.com
+          ADMIN_PASSWORD=ci-probe
+          ALLOWED_EMAIL_DOMAINS=std.yildiz.edu.tr
+          UPLOADS_DIR=/app/uploads
+          ENV
+          docker run -d --name app --network host --env-file ci.env ekstremspor-724-site:ci
+          # The home page renders on the server; /api/stats reads the database: 200 on both means the app
+          # booted and reached Postgres.
+          for _ in $(seq 1 60); do
+            home=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/ || true)
+            code=$(curl -s -o body.json -w '%{http_code}' http://localhost:3000/api/stats || true)
+            if [ "$home" = 200 ] && [ "$code" = 200 ] && grep -q '"targetKm"' body.json; then
+              echo "GET / -> $home; GET /api/stats -> $code $(cat body.json)"
+              files=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/files/x/y.jpg || true)
+              echo "GET /api/files/x/y.jpg (no session) -> $files"
+              [ "$files" = 401 ] || { echo "expected 401"; docker logs app; exit 1; }
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "the app never answered 200 (GET / -> $home, GET /api/stats -> $code)"
+          docker logs app
+          exit 1
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the probed image to GHCR
+        if: github.event_name == 'push'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ "$REF_NAME" = production ]; then
+            tags="production $SHA"
+          else
+            tags="latest $SHA"
+          fi
+          for tag in $tags; do
+            docker tag ekstremspor-724-site:ci "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done
+      - name: Notify Dokploy
+        if: github.event_name == 'push' && github.ref == 'refs/heads/production'
+        env:
+          HOOK: ${{ secrets.DOKPLOY_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "DOKPLOY_DEPLOY_HOOK unset; skip"
+            exit 0
+          fi
+          curl -fsS -X POST "$HOOK"

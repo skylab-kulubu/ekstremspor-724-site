@@ -1,9 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { useRealtime } from "@/lib/realtime/useRealtime";
 import { VehicleGlyph } from "@/components/illustrations";
-import { decideActivity } from "@/lib/actions/activities";
+import {
+  decideActivity,
+  returnEquipment,
+  assignEquipment,
+} from "@/lib/actions/activities";
 import type { VehicleType, EquipmentVehicleType } from "@/lib/types";
 
 type ActivityRow = {
@@ -59,7 +63,6 @@ type AssignTarget = {
 };
 
 export function PendingActivities() {
-  const supabase = createClient();
   const [rows, setRows] = useState<ActivityRow[]>([]);
   const [equipments, setEquipments] = useState<EquipRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -87,62 +90,41 @@ export function PendingActivities() {
   }
 
   const refetch = useCallback(async () => {
-    const [{ data: acts }, { data: equips }] = await Promise.all([
-      supabase
-        .from("activities")
-        .select(
-          "id, user_id, distance, vehicle_type, source, evidence_url, date_range, created_at, profiles!inner(full_name, email)",
-        )
-        .eq("status", "pending")
-        .order("created_at", { ascending: false }),
-      supabase.from("equipments").select("id, type, status, code, assigned_to"),
+    const [actsRes, equipsRes] = await Promise.all([
+      fetch("/api/admin/activities/pending", { cache: "no-store" }),
+      fetch("/api/equipments", { cache: "no-store" }),
     ]);
 
-    const list = (acts ?? []) as unknown as ActivityRow[];
+    if (!actsRes.ok) {
+      setLoading(false);
+      return;
+    }
+    const list = (await actsRes.json()) as ActivityRow[];
     setRows(list);
-    setEquipments((equips ?? []) as unknown as EquipRow[]);
+
+    if (equipsRes.ok) {
+      const equipData = (await equipsRes.json()) as EquipRow[];
+      setEquipments(equipData);
+    }
     setLoading(false);
 
-    const withEvidence = list.filter((r) => r.evidence_url);
-    const signed = await Promise.all(
-      withEvidence.map(async (r) => {
-        const { data: s } = await supabase.storage
-          .from("evidence")
-          .createSignedUrl(r.evidence_url!, 3600);
-        return [r.id, s?.signedUrl] as const;
-      }),
-    );
+    // Evidence images stream through /api/files with built-in auth.
     setThumbs(
       Object.fromEntries(
-        signed.filter((s): s is [string, string] => Boolean(s[1])),
+        list
+          .filter((r) => r.evidence_url)
+          .map((r) => [r.id, `/api/files/${r.evidence_url}`] as const),
       ),
     );
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     refetch();
-    const channel = supabase
-      .channel("admin-pending")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "activities" },
-        () => refetch(),
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "equipments" },
-        () => refetch(),
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "profiles" },
-        () => refetch(),
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [supabase, refetch]);
+  }, [refetch]);
+  useRealtime(
+    ["activities_changes", "equipments_changes", "profiles_changes"],
+    refetch,
+  );
 
   async function updateStatus(id: string, status: "approved" | "rejected") {
     setBusyId(id);
@@ -158,11 +140,6 @@ export function PendingActivities() {
     if (!km || km <= 0) return;
     setReturning(true);
 
-    await supabase
-      .from("activities")
-      .update({ distance: km, status: "approved" })
-      .eq("id", returnTarget.activityId);
-
     const equip = equipments.find(
       (e) =>
         e.assigned_to === returnTarget.userId &&
@@ -170,14 +147,12 @@ export function PendingActivities() {
         e.status === "in_use",
     );
     if (equip) {
-      await supabase
-        .from("equipments")
-        .update({
-          status: "available",
-          assigned_to: null,
-          returned_at: new Date().toISOString(),
-        })
-        .eq("id", equip.id);
+      const result = await returnEquipment({
+        equipmentId: equip.id,
+        km,
+        damaged: false,
+      });
+      if (result.error) setError(result.error);
     }
 
     setReturning(false);
@@ -189,16 +164,14 @@ export function PendingActivities() {
   async function handleAssignEquipment(equipmentId: string) {
     if (!assignTarget) return;
     setAssigning(true);
-    await supabase
-      .from("equipments")
-      .update({
-        status: "in_use",
-        assigned_to: assignTarget.userId,
-        assigned_at: new Date().toISOString(),
-        returned_at: null,
-      })
-      .eq("id", equipmentId);
+    const result = await assignEquipment({
+      equipmentId,
+      userId: assignTarget.userId,
+    });
     setAssigning(false);
+    if (result.error) {
+      setError(result.error);
+    }
     setAssignTarget(null);
     refetch();
   }

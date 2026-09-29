@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
-import { fetchLiveStats } from "@/lib/queries/stats";
+import { useRealtime } from "@/lib/realtime/useRealtime";
+import type { LiveStats } from "@/lib/queries/stats";
 
 const TR = (n: number) => n.toLocaleString("tr-TR");
 
@@ -17,35 +17,21 @@ const STAGES = [
 const MILESTONES = [25, 50, 75];
 
 export function SaplingProgress() {
-  const supabase = createClient();
   const [totalKm, setTotalKm] = useState(0);
   const [targetKm, setTargetKm] = useState(5000);
 
   const refetch = useCallback(async () => {
-    const s = await fetchLiveStats(supabase);
+    const res = await fetch("/api/stats", { cache: "no-store" });
+    if (!res.ok) return;
+    const s = (await res.json()) as LiveStats;
     setTotalKm(s.totalKm);
     setTargetKm(s.targetKm);
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     refetch();
-    const channel = supabase
-      .channel("sapling-activities")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "activities",
-          filter: "status=eq.approved",
-        },
-        () => refetch(),
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [supabase, refetch]);
+  }, [refetch]);
+  useRealtime("activities_changes", refetch);
 
   const pct = Math.min(100, (totalKm / Math.max(targetKm, 1)) * 100);
   const reached = pct >= 100;
